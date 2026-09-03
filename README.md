@@ -106,15 +106,92 @@ node helper.mjs serve
 | `CHATGPT_X11_DIR` | `<ROOT>/x11` | Xvfb 解包目录 |
 | `XVFB_BIN` | `<X11_DIR>/usr/bin/Xvfb` | Xvfb 可执行文件路径 |
 
-## Xvfb（无显示器环境）
+## Xvfb（无显示器环境的配置）
 
-`helper.mjs` 在启动时检查 `$DISPLAY`：若未设置，会以 detached 方式自动启动
-`Xvfb :99 -screen 0 1440x900x24 -nolisten tcp` 并把 `DISPLAY` 指向它，
-之后有头 Chromium 即可在该虚拟显示上运行。
+### 工作机制
 
-仓库内 `x11/` 是从 Ubuntu 24.04 (arm64) `xvfb 21.1.12-1ubuntu1` 包
-用 `dpkg -x` 解包得到的最小文件集，其依赖库（libxau、libgl1 等）通常已由系统提供；
-如有冲突可通过 `CHATGPT_X11_DIR` / `XVFB_BIN` 指向系统自带的 Xvfb。
+`helper.mjs` 在启动时检查 `$DISPLAY`：
+
+- 已设置 → 直接使用现有 X server；
+- 未设置 → 以 detached 方式自动启动
+  `Xvfb :99 -screen 0 1440x900x24 -nolisten tcp`，并把进程内 `DISPLAY` 设为 `:99`，
+  之后有头 Chromium 即可在该虚拟显示上运行。启动成功时 stderr 会输出
+  `no $DISPLAY; spawned Xvfb on :99 (pid ...)`。
+
+Xvfb 可执行文件的位置按以下顺序确定：
+
+1. 环境变量 `XVFB_BIN`（完整路径）；
+2. 否则 `<CHATGPT_X11_DIR 或 ~/.dsh/chatgpt-bridge/x11>/usr/bin/Xvfb`（即仓库默认布局）。
+
+Xvfb 启动时其 `LD_LIBRARY_PATH` 会自动把 `x11/usr/lib` 前置，因此解包进来的
+依赖库与系统库冲突时可以覆盖系统版本。
+
+`x11/` 目录是二进制文件，**不随仓库提交**（见 `.gitignore`），
+需要在目标机器上按下面任一方式自行准备。
+
+### 方式一：用系统包管理器安装（有 root 权限，最简单）
+
+```bash
+# Ubuntu / Debian（amd64 与 arm64 包名相同）
+sudo apt-get install -y xvfb
+
+# 系统装好后，让 helper 指向系统二进制（因为默认路径是 <ROOT>/x11/usr/bin/Xvfb）：
+export XVFB_BIN=/usr/bin/Xvfb
+# 写入 ~/.bashrc 或 DSH 插件进程能读到的环境配置中以持久化
+```
+
+### 方式二：无 root 权限时手工解包（本仓库当前机器的做法）
+
+适用于容器/受限环境（sudo 不可用、conda 装不了）的情况，
+以 Ubuntu 24.04 为例：
+
+```bash
+cd ~/.dsh/chatgpt-bridge
+
+# 1) 确认依赖库已由系统提供（缺失的需另行处理，见文末）
+for p in xserver-common libgl1 libxau6 libxdmcp6 libxfont2 libpixman-1-0 \
+         xauth x11-xkb-utils libgcrypt20 libselinux1 libsystemd0 libunwind8; do
+  dpkg -s "$p" >/dev/null 2>&1 || echo "MISSING: $p"
+done
+
+# 2) 下载 xvfb 的 .deb 到当前目录
+#    arm64 机器（Ubuntu ports 源）：
+curl -O http://ports.ubuntu.com/ubuntu-ports/pool/universe/x/xorg-server/xvfb_21.1.12-1ubuntu1_arm64.deb
+#    amd64 机器（archive.ubuntu.com 源）：
+curl -O http://archive.ubuntu.com/ubuntu/pool/universe/x/xorg-server/xvfb_21.1.12-1ubuntu1_amd64.deb
+
+# 3) 解包到 <ROOT>/x11（不需要 root，也不真正安装）
+dpkg -x xvfb_*.deb x11/
+
+# 4) 验证
+ls x11/usr/bin        # 应看到 Xvfb 和 xvfb-run
+XVFB_BIN=$PWD/x11/usr/bin/Xvfb
+"$XVFB_BIN" :99 -screen 0 1440x900x24 -nolisten tcp &
+sleep 1
+ls /tmp/.X99-lock     # 文件存在 = X server 启动成功
+kill %1 && rm -f /tmp/.X99-lock
+```
+
+包名/版本可从对应发行版的包索引查询（`http://ports.ubuntu.com/ubuntu-ports/dists/`
+或 `http://archive.ubuntu.com/ubuntu/dists/` 下的 `binary-*/Packages.gz`）。
+CentOS/RHEL 系可以用同样思路解 RPM：`rpm2cpio xxx.rpm | cpio -idm --to-std` 后
+把 `usr/bin/Xvfb` 布局到 `x11/usr/bin/` 即可。
+
+### 如果依赖库也缺失（无 root 且系统没装 X 库）
+
+对缺失的依赖包重复"下载 → `dpkg -x pkg.deb x11/`"即可，
+所有解包内容都放在同一个 `x11/` 树下：`x11/usr/lib` 里的 .so 会通过
+helper 自动设置的 `LD_LIBRARY_PATH` 优先加载。
+依赖闭包可用包索引中的 `Depends:` 字段（或 `apt-cache showpkg`）逐个核对。
+
+### 常见故障
+
+| 现象 | 原因 / 处理 |
+|---|---|
+| `Missing X server or $DISPLAY` 仍在报 | helper 未能拉起 Xvfb，看 stderr 的 `Xvfb bootstrap failed` 日志；确认 `XVFB_BIN`/默认路径存在且可执行 |
+| Xvfb 启动报 `Unrecognized option: -display` | 显示号是**位置参数**：`Xvfb :99 ...`，不是 `Xvfb -display :99` |
+| `Error: Cannot open display`（Chromium 侧） | 检查 `ls /tmp/.X99-lock` 是否存在、Xvfb 进程是否还活着 |
+| 有真实显示器的机器上想看到窗口 | 不要设置 `DISPLAY` 指向 Xvfb，让 helper 使用宿主机的 X（或临时 `export DISPLAY=:1`） |
 
 ## 已知注意事项
 

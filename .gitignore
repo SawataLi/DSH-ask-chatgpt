@@ -1,0 +1,19 @@
+# Node
+node_modules/
+npm-debug.log*
+
+# 浏览器 profile（含登录 Cookie，等同凭证）与运行状态
+profile/
+.logged-in
+probe-profile-state.json
+
+# 本地 Xvfb 解包目录（二进制，按 README 重新解包即可）
+x11/
+
+# 开发探针的大文件输出
+dev/*.png
+dev/*-out.json
+
+# 日志与系统杂项
+*.log
+.DS_Store

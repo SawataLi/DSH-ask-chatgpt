@@ -1,6 +1,6 @@
-# chatgpt-bridge
+# DSH-ask-chatgpt
 
-DSH 的 ChatGPT 桥接插件：用 Playwright 驱动 Chromium 打开 chatgpt.com 的**网页版临时聊天**，
+DSH 调用网页版 ChatGPT 插件：用 Playwright 驱动 Chromium 打开 chatgpt.com 的**网页版临时聊天**，
 把外部 ChatGPT（默认模型 GPT-5.6 Sol，思考档位 Pro / Instant 可选）作为 DSH 中的一个辅助工具，
 用于联网获取最新信息、生成详细计划或其他需要外部大模型协助的问答。
 
